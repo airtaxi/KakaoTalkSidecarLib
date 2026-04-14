@@ -185,22 +185,29 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
 
         if (richRect.Width > 0)
         {
-            int toolbarTop  = richRect.Bottom;
-            int toolbarH    = wndRect.Bottom - toolbarTop;
-            int kakaoButton = toolbarH - 10;                          // 메신저 버튼 폭 (추정)
-            int ourSize     = toolbarH / 2;                           // 디시콘 버튼 크기 (툴바 50%)
-            int ourBtnTop   = toolbarTop + (toolbarH - ourSize) / 2;  // 세로 중앙 정렬
-            int ourBtnX     = richRect.Left                           // +/이모티콘/파일 3개 건너뜀
-                            + kakaoButton * 2                         // (* 2 ≈ 실제 3개 버튼 폭)
-                            + (kakaoButton - ourSize) / 2;            // 슬롯 내 수평 중앙 정렬
+            int toolbarTop      = richRect.Bottom;
+            int toolbarH        = wndRect.Bottom - toolbarTop;
+            int kakaoButtonSlot = (int)(toolbarH * 0.875);            // 메신저 버튼 슬롯 폭 (비율 기반, DPI 독립)
+            int ourSize         = toolbarH / 2;                       // 디시콘 버튼 크기 (툴바 50%)
+            int ourBtnTop       = toolbarTop + (toolbarH - ourSize) / 2;  // 세로 중앙 정렬
+            int ourBtnX         = richRect.Left                       // +/이모티콘/파일 3개 건너뜀
+                                + kakaoButtonSlot * 2                 // (* 2 ≈ 실제 3개 버튼 폭)
+                                + (kakaoButtonSlot - ourSize) / 2;    // 슬롯 내 수평 중앙 정렬
             var pt = new Win32.POINT { X = ourBtnX, Y = ourBtnTop };
             Win32.ScreenToClient(chatHwnd, ref pt);
             return (pt.X, pt.Y, ourSize);
         }
 
         log?.Invoke($"[WARN] 0x{chatHwnd:X8}: RICHEDIT50W 앵커 없음 — 폴백 사용");
-        var fallbackPt = new Win32.POINT { X = wndRect.Left + 78, Y = wndRect.Bottom - 42 };
+        uint windowDpi = Win32.GetDpiForWindow(chatHwnd);
+        double dpiScale = windowDpi / 96.0;
+        int fallbackSize = (int)(18 * dpiScale);
+        var fallbackPt = new Win32.POINT
+        {
+            X = wndRect.Left + (int)(39 * dpiScale),
+            Y = wndRect.Bottom - (int)(21 * dpiScale),
+        };
         Win32.ScreenToClient(chatHwnd, ref fallbackPt);
-        return (fallbackPt.X, fallbackPt.Y, 36);
+        return (fallbackPt.X, fallbackPt.Y, fallbackSize);
     }
 }
