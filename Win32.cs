@@ -87,6 +87,46 @@ static partial class Win32
         public int  fWide;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint   Flags;
+        public uint   Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT
+    {
+        public int    DeltaX, DeltaY;
+        public uint   MouseData, Flags, Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HARDWAREINPUT
+    {
+        public uint   Message;
+        public ushort ParamLow, ParamHigh;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct InputData
+    {
+        [FieldOffset(0)] public MOUSEINPUT   Mouse;
+        [FieldOffset(0)] public KEYBDINPUT   Keyboard;
+        [FieldOffset(0)] public HARDWAREINPUT Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT
+    {
+        public uint      Type;
+        public InputData Data;
+    }
+
     // ── DPI ─────────────────────────────────────────────────────────────────────────────
     // !! 반드시 최초 실행: 이후 모든 GetWindowRect/ScreenToClient가 물리픽셀 기준이 됨
     [LibraryImport("user32.dll")]
@@ -280,6 +320,32 @@ static partial class Win32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool ChangeWindowMessageFilter(uint message, uint flag);
 
+    // ── 입력 시뮬레이션 ──────────────────────────────────────────────────────────────────────
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static unsafe partial uint SendInput(uint numberOfInputs, INPUT* inputs, int sizeOfInput);
+
+    // ── 클립보드 ────────────────────────────────────────────────────────────────────────────
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(IntPtr hwndNewOwner);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr SetClipboardData(uint format, IntPtr handle);
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetClipboardData(uint format);
+
+    [LibraryImport("user32.dll")]
+    public static partial uint EnumClipboardFormats(uint format);
+
     // ── 메모리 할당 ────────────────────────────────────────────────────────────────────────
     [LibraryImport("kernel32.dll")]
     public static partial IntPtr GlobalAlloc(uint flags, nuint bytes);
@@ -293,6 +359,9 @@ static partial class Win32
 
     [LibraryImport("kernel32.dll")]
     public static partial IntPtr GlobalFree(IntPtr handle);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nuint GlobalSize(IntPtr handle);
 
     // ── 픽셀 / DC ──────────────────────────────────────────────────────────────────────────
     [LibraryImport("user32.dll")]
@@ -354,6 +423,14 @@ static partial class Win32
     public const uint WM_APP             = 0x8000;
     public const uint GHND               = 0x0042;
     public const uint MSGFLT_ADD         = 1;
+
+    public const uint CF_HDROP           = 15;
+    public const uint CF_UNICODETEXT     = 13;
+    public const uint CF_TEXT            = 1;
+
+    public const uint INPUT_KEYBOARD     = 1;
+    public const byte VK_V              = 0x56;
+    public const byte VK_RETURN         = 0x0D;
 
     public static readonly IntPtr DPI_CONTEXT_PER_MONITOR_V2 = new IntPtr(-4);
     public static readonly IntPtr HWND_TOP                   = IntPtr.Zero;

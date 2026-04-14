@@ -129,11 +129,13 @@ public sealed class SessionManager : IDisposable
     }
 
     // ── 디시콘 전송 ─────────────────────────────────────────────────────────
+    public SendMethod SendMethod { get; set; } = SendMethod.Auto;
+
     public Task SendDcconAsync(IntPtr chatHwnd, string filePath) =>
-        DcconSender.SendDcconAsync(chatHwnd, filePath, RaiseLog);
+        DcconSender.SendDcconAsync(chatHwnd, filePath, SendMethod, RaiseLog);
 
     public Task SendMultipleDcconsAsync(IntPtr chatHwnd, IEnumerable<string> filePaths) =>
-        DcconSender.SendMultipleDcconsAsync(chatHwnd, filePaths, RaiseLog);
+        DcconSender.SendMultipleDcconsAsync(chatHwnd, filePaths, SendMethod, RaiseLog);
 
     // ── 로그 이벤트 발생 ─────────────────────────────────────────────────────
     void RaiseLog(string message) => Log?.Invoke(message);
