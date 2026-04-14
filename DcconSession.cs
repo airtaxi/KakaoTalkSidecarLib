@@ -18,6 +18,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
     bool    _hovered;
     bool    _pressed;
     bool    _trackingMouse;
+    Color   _toolbarBackground = Color.White;
     Bitmap? _bmpNormal;
     Bitmap? _bmpHovered;
     Bitmap? _bmpPressed;
@@ -126,18 +127,16 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
     {
         Bitmap? bmp = _pressed ? _bmpPressed : _hovered ? _bmpHovered : _bmpNormal;
         if (bmp != null) { graphics.DrawImageUnscaled(bmp, 0, 0); return; }
-        // 폴백 (비트맵 준비 전)
-        if      (_pressed) graphics.Clear(Color.FromArgb(80, 80, 80));
-        else if (_hovered) graphics.Clear(Color.FromArgb(68, 68, 68));
-        else               graphics.Clear(Color.FromArgb(50, 50, 50));
+        graphics.Clear(_toolbarBackground);
     }
 
     void CreateBitmaps(Image? icon)
     {
         DisposeBitmaps();
-        _bmpNormal  = RenderButtonToBitmap(Color.FromArgb(50, 50, 50), icon);
-        _bmpHovered = RenderButtonToBitmap(Color.FromArgb(68, 68, 68), icon);
-        _bmpPressed = RenderButtonToBitmap(Color.FromArgb(80, 80, 80), icon);
+        _toolbarBackground = SampleToolbarBackgroundColor(ChatHwnd);
+        _bmpNormal  = RenderButtonToBitmap(1.0f, icon);
+        _bmpHovered = RenderButtonToBitmap(0.85f, icon);
+        _bmpPressed = RenderButtonToBitmap(0.70f, icon);
     }
 
     void DisposeBitmaps()
@@ -147,24 +146,43 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
         _bmpPressed?.Dispose(); _bmpPressed = null;
     }
 
-    Bitmap RenderButtonToBitmap(Color backgroundColor, Image? icon)
+    Bitmap RenderButtonToBitmap(float iconOpacity, Image? icon)
     {
         int size = Math.Max(_size, 1);
         var bitmap = new Bitmap(size, size);
         using var graphics = Graphics.FromImage(bitmap);
-        graphics.Clear(backgroundColor);
+        graphics.Clear(_toolbarBackground);
         if (icon != null)
         {
             graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            const int padding = 4;
-            graphics.DrawImage(icon, padding, padding, _size - padding * 2, _size - padding * 2);
+            if (iconOpacity < 1.0f)
+            {
+                using var attributes = new System.Drawing.Imaging.ImageAttributes();
+                float[][] matrix =
+                [
+                    [1, 0, 0, 0,           0],
+                    [0, 1, 0, 0,           0],
+                    [0, 0, 1, 0,           0],
+                    [0, 0, 0, iconOpacity, 0],
+                    [0, 0, 0, 0,           1],
+                ];
+                attributes.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix(matrix));
+                graphics.DrawImage(icon,
+                    new Rectangle(0, 0, size, size),
+                    0, 0, icon.Width, icon.Height,
+                    GraphicsUnit.Pixel, attributes);
+            }
+            else
+            {
+                graphics.DrawImage(icon, 0, 0, size, size);
+            }
         }
         else
         {
             using var font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
             var textSize = graphics.MeasureString("Dc", font);
             graphics.DrawString("Dc", font, Brushes.LightGray,
-                (_size - textSize.Width) / 2f, (_size - textSize.Height) / 2f);
+                (size - textSize.Width) / 2f, (size - textSize.Height) / 2f);
         }
         return bitmap;
     }
@@ -189,7 +207,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
             int toolbarH        = wndRect.Bottom - toolbarTop;
             int kakaoButtonSlot = (int)(toolbarH * 0.875);            // 메신저 버튼 슬롯 폭 (비율 기반, DPI 독립)
             int ourSize         = toolbarH / 2;                       // 디시콘 버튼 크기 (툴바 50%)
-            int ourBtnTop       = toolbarTop + (toolbarH - ourSize) / 2;  // 세로 중앙 정렬
+            int ourBtnTop       = toolbarTop + (int)((toolbarH - ourSize) * 0.45);  // 세로 중앙보다 살짝 위
             int ourBtnX         = richRect.Left                       // +/이모티콘/파일 3개 건너뜀
                                 + kakaoButtonSlot * 2                 // (* 2 ≈ 실제 3개 버튼 폭)
                                 + (kakaoButtonSlot - ourSize) / 2;    // 슬롯 내 수평 중앙 정렬
@@ -209,5 +227,31 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
         };
         Win32.ScreenToClient(chatHwnd, ref fallbackPt);
         return (fallbackPt.X, fallbackPt.Y, fallbackSize);
+    }
+
+    // ── 툴바 배경색 자동 감지 (버튼 배치 영역 근처 픽셀 샘플링) ──────────────
+    static Color SampleToolbarBackgroundColor(IntPtr chatHwnd)
+    {
+        Win32.GetWindowRect(chatHwnd, out var wndRect);
+        // 툴바 좌측 하단 모서리 근처에서 배경 픽셀 샘플링
+        int sampleX = wndRect.Left + 5;
+        int sampleY = wndRect.Bottom - 5;
+
+        IntPtr screenDc = Win32.GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero) return Color.White;
+
+        try
+        {
+            uint colorRef = Win32.GetPixel(screenDc, sampleX, sampleY);
+            if (colorRef == Win32.CLR_INVALID) return Color.White;
+            int red   = (int)(colorRef & 0xFF);
+            int green = (int)((colorRef >> 8) & 0xFF);
+            int blue  = (int)((colorRef >> 16) & 0xFF);
+            return Color.FromArgb(red, green, blue);
+        }
+        finally
+        {
+            Win32.ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 }

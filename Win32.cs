@@ -294,6 +294,18 @@ static partial class Win32
     [LibraryImport("kernel32.dll")]
     public static partial IntPtr GlobalFree(IntPtr handle);
 
+    // ── 픽셀 / DC ──────────────────────────────────────────────────────────────────────────
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetDC(IntPtr hwnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    [LibraryImport("gdi32.dll")]
+    public static partial uint GetPixel(IntPtr hdc, int x, int y);
+
+    public const uint CLR_INVALID = 0xFFFFFFFF;
+
     // ── 문자열 출력 헬퍼 ───────────────────────────────────────────────────────────────────
     public static unsafe string GetWindowTextString(IntPtr hwnd, int maxLength = 256)
     {
