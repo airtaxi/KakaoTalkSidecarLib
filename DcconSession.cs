@@ -209,7 +209,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
             int ourSize         = toolbarH / 2;                       // 디시콘 버튼 크기 (툴바 50%)
             int ourBtnTop       = toolbarTop + (int)((toolbarH - ourSize) * 0.45);  // 세로 중앙보다 살짝 위
             int ourBtnX         = richRect.Left                       // +/이모티콘/파일 3개 건너뜀
-                                + kakaoButtonSlot * 2                 // (* 2 ≈ 실제 3개 버튼 폭)
+                                + (int)(kakaoButtonSlot * 2.875)                 // 위치 보정: 추가 버튼 포함 2.875칸
                                 + (kakaoButtonSlot - ourSize) / 2;    // 슬롯 내 수평 중앙 정렬
             var pt = new Win32.POINT { X = ourBtnX, Y = ourBtnTop };
             Win32.ScreenToClient(chatHwnd, ref pt);
