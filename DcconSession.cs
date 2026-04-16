@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 namespace YellowInsideLib;
 
 // ──── 채팅창 1개에 대응하는 디시콘 버튼 세션 ──────────────────────────────
-sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
+sealed class DcconSession(IntPtr chatHwnd, LogSink? logSink = null)
 {
     const uint TimerId = 1;
 
@@ -26,7 +26,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
     // ── 버튼 생성 ────────────────────────────────────────────────────────────
     public bool CreateButton(Image? icon)
     {
-        var (clientX, clientY, size) = CalcButtonPosition(ChatHwnd, log);
+        var (clientX, clientY, size) = CalcButtonPosition(ChatHwnd, logSink);
         _size = size;
         CreateBitmaps(icon);
 
@@ -58,7 +58,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
     public void UpdatePosition(Image? icon)
     {
         if (ButtonHwnd == IntPtr.Zero) return;
-        var (clientX, clientY, newSize) = CalcButtonPosition(ChatHwnd, log);
+        var (clientX, clientY, newSize) = CalcButtonPosition(ChatHwnd, logSink);
         if (newSize != _size) { _size = newSize; CreateBitmaps(icon); }
         Win32.MoveWindow(ButtonHwnd, clientX, clientY, _size, _size, true);
     }
@@ -190,7 +190,7 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
     // ── 버튼 위치 계산 (물리픽셀 screen → chatWindow client 좌표) ────────────
     // kakaoButton = toolbarH - 10 은 실제 버튼 폭보다 ~1.5배 크게 추정됨
     // 따라서 * 2 가 경험적으로 (+, 이모티콘, 파일) 3개 건너뛰기에 해당함
-    public static (int clientX, int clientY, int size) CalcButtonPosition(IntPtr chatHwnd, Action<string>? log = null)
+    public static (int clientX, int clientY, int size) CalcButtonPosition(IntPtr chatHwnd, LogSink? logSink = null)
     {
         Win32.GetWindowRect(chatHwnd, out var wndRect);
         Win32.RECT richRect = default;
@@ -216,9 +216,9 @@ sealed class DcconSession(IntPtr chatHwnd, Action<string>? log = null)
             return (pt.X, pt.Y, ourSize);
         }
 
-        log?.Invoke($"[WARN] 0x{chatHwnd:X8}: RICHEDIT50W 앵커 없음 — 폴백 사용");
         uint windowDpi = Win32.GetDpiForWindow(chatHwnd);
         double dpiScale = windowDpi / 96.0;
+        logSink?.Warn($"0x{chatHwnd:X8}: RICHEDIT50W 앵커 없음 — DPI 기반 폴백 사용 (DPI: {windowDpi}, scale: {dpiScale:F2}x)");
         int fallbackSize = (int)(18 * dpiScale);
         var fallbackPt = new Win32.POINT
         {

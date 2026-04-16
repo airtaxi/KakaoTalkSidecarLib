@@ -13,13 +13,16 @@ public sealed class SessionManager : IDisposable
     public static SessionManager Instance => s_instance ??= new SessionManager();
 
     // ── 이벤트 ───────────────────────────────────────────────────────────────
-    public event Action<string>? Log;
+    public event Action<string>? InfoLog;
+    public event Action<string>? WarnLog;
+    public event Action<string>? ErrorLog;
     public event Action<SessionInfo>? SessionCreated;
     public event Action<SessionInfo>? SessionRemoved;
     public event Action<SessionInfo>? DcconButtonClicked;
 
     // ── 내부 상태 ────────────────────────────────────────────────────────────
     readonly Lock _lock = new();
+    readonly LogSink _logSink;
     readonly Dictionary<IntPtr, DcconSession> _sessions = [];
     readonly Dictionary<IntPtr, DcconSession> _buttonToSession = [];
     readonly ConcurrentQueue<Action> _pendingActions = new();
@@ -41,7 +44,10 @@ public sealed class SessionManager : IDisposable
     const uint WM_INVOKE            = Win32.WM_APP + 1;
     const uint KakaoWatchIntervalMs = 1000;
 
-    SessionManager() { }
+    SessionManager()
+    {
+        _logSink = new LogSink(RaiseInfoLog, RaiseWarnLog, RaiseErrorLog);
+    }
 
     // ── 서비스 시작 ──────────────────────────────────────────────────────────
     public void Start(string? buttonIconPath = null)
@@ -49,15 +55,14 @@ public sealed class SessionManager : IDisposable
         if (_running) throw new InvalidOperationException("이미 실행 중입니다.");
 
         bool dpiOk = Win32.SetProcessDpiAwarenessContext(Win32.DPI_CONTEXT_PER_MONITOR_V2);
-        RaiseLog($"[DPI]  PerMonitorV2 설정: {(dpiOk ? "OK" : "실패 또는 이미 설정됨")}");
-
+        RaiseInfoLog($"[DPI]  PerMonitorV2 DPI 인식 설정: {(dpiOk ? "성공" : "실패 또는 이미 설정됨")}");
         _kakaoTalkPid = TargetAppHelper.FindProcessId();
-        if (_kakaoTalkPid != 0) RaiseLog($"[OK]   메신저 PID: {_kakaoTalkPid}");
-        else RaiseLog("[WARN] 메신저가 실행되어 있지 않습니다 — 실행 후 자동으로 훅을 설치합니다");
+        if (_kakaoTalkPid != 0) RaiseInfoLog($"메신저 프로세스 발견 — PID: {_kakaoTalkPid}");
+        else RaiseWarnLog("메신저가 실행되어 있지 않습니다 — 실행 후 자동으로 훅을 설치합니다");
 
         _icon = buttonIconPath is not null ? IconHelper.LoadFromFile(buttonIconPath) : null;
-        if (_icon != null) RaiseLog("[OK]   아이콘 로드 완료");
-        else RaiseLog("[WARN] 아이콘 없음 — 텍스트 폴백 사용");
+        if (_icon != null) RaiseInfoLog($"아이콘 로드 완료 — {buttonIconPath}");
+        else RaiseWarnLog("아이콘 경로 미지정 — 텍스트 폴백 사용");
 
         _startedSignal = new ManualResetEventSlim(false);
         _uiThread = new Thread(RunMessageLoop)
@@ -132,13 +137,15 @@ public sealed class SessionManager : IDisposable
     public SendMethod SendMethod { get; set; } = SendMethod.Auto;
 
     public Task SendDcconAsync(IntPtr chatHwnd, string filePath) =>
-        DcconSender.SendDcconAsync(chatHwnd, filePath, SendMethod, RaiseLog);
+        DcconSender.SendDcconAsync(chatHwnd, filePath, SendMethod, _logSink);
 
     public Task SendMultipleDcconsAsync(IntPtr chatHwnd, IEnumerable<string> filePaths) =>
-        DcconSender.SendMultipleDcconsAsync(chatHwnd, filePaths, SendMethod, RaiseLog);
+        DcconSender.SendMultipleDcconsAsync(chatHwnd, filePaths, SendMethod, _logSink);
 
     // ── 로그 이벤트 발생 ─────────────────────────────────────────────────────
-    void RaiseLog(string message) => Log?.Invoke(message);
+    void RaiseInfoLog(string message) => InfoLog?.Invoke(message);
+    void RaiseWarnLog(string message) => WarnLog?.Invoke(message);
+    void RaiseErrorLog(string message) => ErrorLog?.Invoke(message);
 
     // ── WndClass 등록 ────────────────────────────────────────────────────────
     unsafe bool RegisterWndClass()
@@ -167,12 +174,12 @@ public sealed class SessionManager : IDisposable
                 int error = Marshal.GetLastWin32Error();
                 if (error != 1410)  // ERROR_CLASS_ALREADY_EXISTS
                 {
-                    RaiseLog($"[ERROR] RegisterClassEx 실패: {error}");
+                    RaiseErrorLog($"RegisterClassEx 실패 — Win32 error: {error}");
                     return false;
                 }
             }
         }
-        RaiseLog("[OK]   WndClass 등록 완료");
+        RaiseInfoLog("WndClass 등록 완료");
         return true;
     }
 
@@ -206,7 +213,7 @@ public sealed class SessionManager : IDisposable
         }, IntPtr.Zero);
         int count;
         lock (_lock) { count = _sessions.Count; }
-        RaiseLog($"[INFO] 기존 채팅창 {count}개 세션 생성 완료");
+        RaiseInfoLog($"기존 채팅창 {count}개 세션 생성 완료");
     }
 
     // ── 세션 생성 ────────────────────────────────────────────────────────────
@@ -214,11 +221,12 @@ public sealed class SessionManager : IDisposable
     {
         lock (_lock) { if (_sessions.ContainsKey(chatHwnd)) return; }
 
-        var session = new DcconSession(chatHwnd, RaiseLog) { Clicked = OnSessionButtonClicked };
+        var session = new DcconSession(chatHwnd, _logSink) { Clicked = OnSessionButtonClicked };
 
         if (!session.CreateButton(_icon))
         {
-            RaiseLog($"[ERROR] 0x{chatHwnd:X8}: 버튼 생성 실패 ({Marshal.GetLastWin32Error()})");
+            int win32Error = Marshal.GetLastWin32Error();
+            RaiseErrorLog($"0x{chatHwnd:X8}: 버튼 생성 실패 — Win32 error: {win32Error}");
             return;
         }
 
@@ -229,7 +237,7 @@ public sealed class SessionManager : IDisposable
         }
 
         var info = CreateSessionInfo(chatHwnd, true);
-        RaiseLog($"[OK]   세션 생성: 0x{chatHwnd:X8} '{info.Title}'  버튼=0x{session.ButtonHwnd:X8}");
+        RaiseInfoLog($"세션 생성: 0x{chatHwnd:X8} '{info.Title}'  버튼=0x{session.ButtonHwnd:X8}");
         SessionCreated?.Invoke(info);
     }
 
@@ -248,7 +256,7 @@ public sealed class SessionManager : IDisposable
         int remainingCount;
         lock (_lock) { remainingCount = _sessions.Count; }
 
-        RaiseLog($"[INFO] 세션 제거: 0x{chatHwnd:X8}  남은 세션: {remainingCount}개");
+        RaiseInfoLog($"세션 제거: 0x{chatHwnd:X8}  남은 세션: {remainingCount}개");
         SessionRemoved?.Invoke(CreateSessionInfo(chatHwnd, false));
     }
 
@@ -257,14 +265,14 @@ public sealed class SessionManager : IDisposable
         List<IntPtr> keys;
         lock (_lock) { keys = [.. _sessions.Keys]; }
         foreach (var chatHwnd in keys) DetachSession(chatHwnd);
-        RaiseLog("[INFO] 모든 세션 제거 완료");
+        RaiseInfoLog("모든 세션 제거 완료");
     }
 
     // ── 버튼 클릭 콜백 ───────────────────────────────────────────────────────
     void OnSessionButtonClicked(DcconSession session)
     {
         var info = CreateSessionInfo(session.ChatHwnd, true);
-        RaiseLog($"[EVENT] ★ 디시콘 버튼 클릭!  채팅방: 0x{session.ChatHwnd:X8}  ({DateTime.Now:HH:mm:ss.fff})");
+        RaiseInfoLog($"★ 디시콘 버튼 클릭 — 채팅방: 0x{session.ChatHwnd:X8}, 제목: '{info.Title}' ({DateTime.Now:HH:mm:ss.fff})");
         DcconButtonClicked?.Invoke(info);
     }
 
@@ -279,13 +287,13 @@ public sealed class SessionManager : IDisposable
             UninstallHooks();
             DetachAll();
             _kakaoTalkPid = 0;
-            RaiseLog("[INFO] 카카오톡 종료 감지 — 세션 정리 완료");
+            RaiseInfoLog("카카오톡 종료 감지 — 세션 정리 완료");
         }
 
         if (newPid != 0)
         {
             _kakaoTalkPid = newPid;
-            RaiseLog($"[INFO] 카카오톡 재시작 감지 — 새 PID: {_kakaoTalkPid}");
+            RaiseInfoLog($"카카오톡 재시작 감지 — 새 PID: {_kakaoTalkPid}");
             InstallHooks();
             AttachToExistingWindows();
         }
@@ -308,7 +316,7 @@ public sealed class SessionManager : IDisposable
             IntPtr.Zero, _winEventDelegate,
             _kakaoTalkPid, 0, Win32.WINEVENT_OUTOFCONTEXT);
 
-        RaiseLog($"[OK]   훅 설치 showDestroy=0x{_showDestroyHook:X8}  location=0x{_locationHook:X8}");
+        RaiseInfoLog($"훅 설치 완료 — showDestroy=0x{_showDestroyHook:X8}, location=0x{_locationHook:X8}, 대상 PID: {_kakaoTalkPid}");
     }
 
     void UninstallHooks()
@@ -364,7 +372,7 @@ public sealed class SessionManager : IDisposable
 
         if (!RegisterWndClass())
         {
-            RaiseLog("[ERROR] WndClass 등록 실패. 종료합니다.");
+            RaiseErrorLog("WndClass 등록 실패 — 메시지 루프를 시작할 수 없습니다");
             _startedSignal?.Set();
             return;
         }
@@ -377,7 +385,7 @@ public sealed class SessionManager : IDisposable
         _kakaoWatchTimerId = Win32.SetTimer(IntPtr.Zero, IntPtr.Zero, KakaoWatchIntervalMs, IntPtr.Zero);
         _startedSignal?.Set();
 
-        RaiseLog("[INFO] 메시지 루프 시작");
+        RaiseInfoLog($"메시지 루프 시작 — 스레드: {_uiThreadId}");
         while (Win32.GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
             if (msg.message == WM_INVOKE)
@@ -398,7 +406,7 @@ public sealed class SessionManager : IDisposable
         UninstallHooks();
         DetachAll();
         UnregisterWndClass();
-        RaiseLog("[INFO] 메시지 루프 종료");
+        RaiseInfoLog("메시지 루프 종료");
     }
 
     // ── 헬퍼 ─────────────────────────────────────────────────────────────────

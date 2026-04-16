@@ -8,70 +8,75 @@ static class DcconSender
     // ── Public API (하위 호환) ────────────────────────────────────────────────
 
     public static Task SendDcconAsync(IntPtr chatWindowHandle, string filePath, Action<string>? log = null) =>
-        SendDcconAsync(chatWindowHandle, filePath, SendMethod.Auto, log);
+        SendDcconAsync(chatWindowHandle, filePath, SendMethod.Auto, new LogSink(InfoLog: log, WarnLog: log, ErrorLog: log));
 
     public static Task SendMultipleDcconsAsync(IntPtr chatWindowHandle, IEnumerable<string> filePaths, Action<string>? log = null) =>
-        SendMultipleDcconsAsync(chatWindowHandle, filePaths, SendMethod.Auto, log);
+        SendMultipleDcconsAsync(chatWindowHandle, filePaths, SendMethod.Auto, new LogSink(InfoLog: log, WarnLog: log, ErrorLog: log));
 
     // ── Public API (SendMethod 지정) ─────────────────────────────────────────
 
-    public static async Task SendDcconAsync(IntPtr chatWindowHandle, string filePath, SendMethod sendMethod, Action<string>? log = null)
+    public static async Task SendDcconAsync(IntPtr chatWindowHandle, string filePath, SendMethod sendMethod, LogSink? logSink = null)
     {
-        log?.Invoke($"[DCCON] 디시콘 전송 시작: 0x{chatWindowHandle:X8} ({sendMethod})");
+        string fullPath = Path.GetFullPath(filePath);
+        logSink?.Info($"[전송] 디시콘 전송 시작 — 대상: 0x{chatWindowHandle:X8}, 방식: {sendMethod}, 파일: {Path.GetFileName(filePath)}, 전체 경로: {fullPath}");
 
         if (!File.Exists(filePath))
         {
-            log?.Invoke($"[ERROR] 디시콘 이미지 파일이 없습니다: {filePath}");
+            logSink?.Error($"[전송] 디시콘 이미지 파일 없음 — 경로: {fullPath}");
             return;
         }
 
-        string fullPath = Path.GetFullPath(filePath);
-        await SendFilesAsync(chatWindowHandle, [fullPath], sendMethod, log);
+        await SendFilesAsync(chatWindowHandle, [fullPath], sendMethod, logSink);
     }
 
-    public static async Task SendMultipleDcconsAsync(IntPtr chatWindowHandle, IEnumerable<string> filePaths, SendMethod sendMethod, Action<string>? log = null)
+    public static async Task SendMultipleDcconsAsync(IntPtr chatWindowHandle, IEnumerable<string> filePaths, SendMethod sendMethod, LogSink? logSink = null)
     {
-        log?.Invoke($"[DCCON] 다중 디시콘 전송 시작: 0x{chatWindowHandle:X8} ({sendMethod})");
-
         var validFullPaths = new List<string>();
+        int totalCount = 0;
+        int skippedCount = 0;
+
         foreach (var filePath in filePaths)
         {
+            totalCount++;
             if (!File.Exists(filePath))
             {
-                log?.Invoke($"[ERROR] 디시콘 이미지 파일이 없습니다: {filePath}");
+                skippedCount++;
+                logSink?.Error($"[전송] 디시콘 이미지 파일 없음 — 경로: {Path.GetFullPath(filePath)}");
                 continue;
             }
             validFullPaths.Add(Path.GetFullPath(filePath));
         }
 
+        logSink?.Info($"[전송] 다중 디시콘 전송 시작 — 대상: 0x{chatWindowHandle:X8}, 방식: {sendMethod}, 전체: {totalCount}개, 유효: {validFullPaths.Count}개, 누락: {skippedCount}개");
+
         if (validFullPaths.Count == 0)
         {
-            log?.Invoke("[ERROR] 전송할 유효한 디시콘 파일이 없습니다");
+            logSink?.Error($"[전송] 전송할 유효한 디시콘 파일 없음 — 입력된 {totalCount}개 파일 모두 존재하지 않음");
             return;
         }
 
-        await SendFilesAsync(chatWindowHandle, validFullPaths, sendMethod, log);
+        await SendFilesAsync(chatWindowHandle, validFullPaths, sendMethod, logSink);
     }
 
     // ── 전송 방식 분기 ───────────────────────────────────────────────────────
 
-    static async Task SendFilesAsync(IntPtr chatWindowHandle, List<string> filePaths, SendMethod sendMethod, Action<string>? log)
+    static async Task SendFilesAsync(IntPtr chatWindowHandle, List<string> filePaths, SendMethod sendMethod, LogSink? logSink)
     {
         switch (sendMethod)
         {
             case SendMethod.DropFiles:
-                await SendViaDropFilesAsync(chatWindowHandle, filePaths, log);
+                await SendViaDropFilesAsync(chatWindowHandle, filePaths, logSink);
                 break;
 
             case SendMethod.Clipboard:
-                await SendViaClipboardAsync(chatWindowHandle, filePaths, log);
+                await SendViaClipboardAsync(chatWindowHandle, filePaths, logSink);
                 break;
 
             case SendMethod.Auto:
-                if (!await SendViaDropFilesAsync(chatWindowHandle, filePaths, log))
+                if (!await SendViaDropFilesAsync(chatWindowHandle, filePaths, logSink))
                 {
-                    log?.Invoke("[DCCON] WM_DROPFILES 실패 → 클립보드 방식으로 재시도");
-                    await SendViaClipboardAsync(chatWindowHandle, filePaths, log);
+                    logSink?.Info($"[전송] WM_DROPFILES 실패 → 클립보드 방식으로 재시도 — 대상: 0x{chatWindowHandle:X8}");
+                    await SendViaClipboardAsync(chatWindowHandle, filePaths, logSink);
                 }
                 break;
         }
@@ -79,7 +84,7 @@ static class DcconSender
 
     // ── WM_DROPFILES 방식 (기존 로직) ────────────────────────────────────────
 
-    static async Task<bool> SendViaDropFilesAsync(IntPtr chatWindowHandle, List<string> filePaths, Action<string>? log)
+    static async Task<bool> SendViaDropFilesAsync(IntPtr chatWindowHandle, List<string> filePaths, LogSink? logSink)
     {
         return await Task.Run(() =>
         {
@@ -91,23 +96,24 @@ static class DcconSender
                 IntPtr dropFilesHandle = BuildDropFilesMemory(filePaths);
                 if (dropFilesHandle == IntPtr.Zero)
                 {
-                    log?.Invoke("[ERROR] DROPFILES 메모리 할당 실패");
+                    logSink?.Error($"[전송] DROPFILES 메모리 할당 실패 — GlobalAlloc 반환값 null, 파일 수: {filePaths.Count}개");
                     return false;
                 }
 
                 if (!Win32.PostMessage(chatWindowHandle, Win32.WM_DROPFILES, dropFilesHandle, IntPtr.Zero))
                 {
+                    int win32Error = Marshal.GetLastWin32Error();
                     Win32.GlobalFree(dropFilesHandle);
-                    log?.Invoke("[ERROR] WM_DROPFILES 전송 실패");
+                    logSink?.Error($"[전송] WM_DROPFILES 전송 실패 — PostMessage 실패, 대상: 0x{chatWindowHandle:X8} (Win32 error: {win32Error})");
                     return false;
                 }
 
-                log?.Invoke($"[DCCON] ✓ WM_DROPFILES 전송 완료: {filePaths.Count}개 파일");
+                logSink?.Info($"[전송] ✓ WM_DROPFILES 전송 완료 — {filePaths.Count}개 파일, 대상: 0x{chatWindowHandle:X8}");
                 return true;
             }
             catch (Exception exception)
             {
-                log?.Invoke($"[ERROR] WM_DROPFILES 전송 실패: {exception.Message}");
+                logSink?.Error($"[전송] WM_DROPFILES 전송 중 예외 발생 — 대상: 0x{chatWindowHandle:X8}, {exception.GetType().Name}: {exception.Message}");
                 return false;
             }
         });
@@ -115,31 +121,32 @@ static class DcconSender
 
     // ── 클립보드 방식 (CF_HDROP + Ctrl+V + Enter) ────────────────────────────
 
-    static async Task SendViaClipboardAsync(IntPtr chatWindowHandle, List<string> filePaths, Action<string>? log)
+    static async Task SendViaClipboardAsync(IntPtr chatWindowHandle, List<string> filePaths, LogSink? logSink)
     {
         await Task.Run(() =>
         {
             try
             {
-                log?.Invoke("[DCCON] 클립보드 방식 전송 시도");
+                logSink?.Info($"[전송] 클립보드 방식 전송 시도 — 대상: 0x{chatWindowHandle:X8}, {filePaths.Count}개 파일");
 
                 // 1. 기존 클립보드 내용 백업
-                var savedClipboard = SaveClipboard(log);
+                var savedClipboard = SaveClipboard(logSink);
 
                 // 2. DROPFILES 메모리 구성 → 클립보드에 CF_HDROP 설정
                 IntPtr dropFilesHandle = BuildDropFilesMemory(filePaths);
                 if (dropFilesHandle == IntPtr.Zero)
                 {
-                    log?.Invoke("[ERROR] DROPFILES 메모리 할당 실패");
-                    RestoreClipboard(savedClipboard, log);
+                    logSink?.Error($"[전송] 클립보드 방식 DROPFILES 메모리 할당 실패 — GlobalAlloc 반환값 null, 파일 수: {filePaths.Count}개");
+                    RestoreClipboard(savedClipboard, logSink);
                     return;
                 }
 
                 if (!Win32.OpenClipboard(IntPtr.Zero))
                 {
-                    log?.Invoke("[ERROR] 클립보드 열기 실패");
+                    int win32Error = Marshal.GetLastWin32Error();
                     Win32.GlobalFree(dropFilesHandle);
-                    RestoreClipboard(savedClipboard, log);
+                    logSink?.Error($"[전송] 클립보드 열기 실패 — OpenClipboard 반환값 false (Win32 error: {win32Error})");
+                    RestoreClipboard(savedClipboard, logSink);
                     return;
                 }
 
@@ -147,10 +154,11 @@ static class DcconSender
 
                 if (Win32.SetClipboardData(Win32.CF_HDROP, dropFilesHandle) == IntPtr.Zero)
                 {
-                    log?.Invoke("[ERROR] 클립보드 데이터 설정 실패");
+                    int win32Error = Marshal.GetLastWin32Error();
                     Win32.GlobalFree(dropFilesHandle);
                     Win32.CloseClipboard();
-                    RestoreClipboard(savedClipboard, log);
+                    logSink?.Error($"[전송] 클립보드 데이터 설정 실패 — SetClipboardData(CF_HDROP) 반환값 null (Win32 error: {win32Error})");
+                    RestoreClipboard(savedClipboard, logSink);
                     return;
                 }
                 // SetClipboardData 성공 → OS가 핸들 소유권을 가져감 (GlobalFree 금지)
@@ -158,6 +166,7 @@ static class DcconSender
                 Win32.CloseClipboard();
 
                 // 3. 대상 창 활성화 → 붙여넣기 → 전송
+                logSink?.Info($"[전송] 클립보드 설정 완료, 입력 시뮬레이션 시작 — SetForegroundWindow → Ctrl+V → Enter");
                 Win32.SetForegroundWindow(chatWindowHandle);
                 Thread.Sleep(50);
 
@@ -167,21 +176,21 @@ static class DcconSender
                 SimulateKeyPress(Win32.VK_RETURN);
                 Thread.Sleep(50);
 
-                log?.Invoke($"[DCCON] ✓ 클립보드 방식 전송 완료: {filePaths.Count}개 파일");
+                logSink?.Info($"[전송] ✓ 클립보드 방식 전송 완료 — {filePaths.Count}개 파일, 대상: 0x{chatWindowHandle:X8}");
 
                 // 4. 클립보드 복원
-                RestoreClipboard(savedClipboard, log);
+                RestoreClipboard(savedClipboard, logSink);
             }
             catch (Exception exception)
             {
-                log?.Invoke($"[ERROR] 클립보드 전송 실패: {exception.Message}");
+                logSink?.Error($"[전송] 클립보드 전송 중 예외 발생 — 대상: 0x{chatWindowHandle:X8}, {exception.GetType().Name}: {exception.Message}");
             }
         });
     }
 
     // ── 클립보드 백업 / 복원 ─────────────────────────────────────────────────
 
-    static unsafe List<(uint Format, IntPtr Handle)> SaveClipboard(Action<string>? log)
+    static unsafe List<(uint Format, IntPtr Handle)> SaveClipboard(LogSink? logSink)
     {
         var entries = new List<(uint Format, IntPtr Handle)>();
         if (!Win32.OpenClipboard(IntPtr.Zero)) return entries;
@@ -242,17 +251,18 @@ static class DcconSender
             Win32.CloseClipboard();
         }
 
-        log?.Invoke($"[DCCON] 클립보드 백업: {entries.Count}개 포맷 저장");
+        logSink?.Info($"[전송] 클립보드 백업 완료 — {entries.Count}개 포맷 저장");
         return entries;
     }
 
-    static void RestoreClipboard(List<(uint Format, IntPtr Handle)> entries, Action<string>? log)
+    static void RestoreClipboard(List<(uint Format, IntPtr Handle)> entries, LogSink? logSink)
     {
         if (entries.Count == 0) return;
 
         if (!Win32.OpenClipboard(IntPtr.Zero))
         {
-            log?.Invoke("[WARN] 클립보드 복원 실패: 클립보드 열기 불가");
+            int win32Error = Marshal.GetLastWin32Error();
+            logSink?.Warn($"[전송] 클립보드 복원 실패 — OpenClipboard 반환값 false (Win32 error: {win32Error}), 백업 {entries.Count}개 포맷 메모리 해제");
             foreach (var (_, handle) in entries) Win32.GlobalFree(handle);
             return;
         }
@@ -272,7 +282,7 @@ static class DcconSender
             Win32.CloseClipboard();
         }
 
-        log?.Invoke($"[DCCON] 클립보드 복원 완료: {entries.Count}개 포맷");
+        logSink?.Info($"[전송] 클립보드 복원 완료 — {entries.Count}개 포맷");
     }
 
     // ── 입력 시뮬레이션 ──────────────────────────────────────────────────────
